@@ -1,6 +1,8 @@
+# Mini Wallet + 1:1 Wallet Chat
+
 ## Frontend
 
-cd ./frontend
+cd frontend
 npm install 
 npm run dev
 
@@ -10,7 +12,6 @@ update .env variable
     VITE_RPC_URL=https://1rpc.io/sepolia
     VITE_BACKEND_URL=http://localhost:4000
 `
-
 
 
 ## Backend 

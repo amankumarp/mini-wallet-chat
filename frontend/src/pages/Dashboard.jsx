@@ -4,7 +4,12 @@ import io from "socket.io-client";
 
 import { decrypt } from "../lib/crypto";
 import { getBalance, getNetwork, sendEth } from "../lib/wallet";
-import {encryptForPublicKey, decryptWithPrivateKey, deriveSecretKey, publicKeyFromPrivate} from "../lib/e2e";
+import {
+  encryptForPublicKey,
+  decryptWithPrivateKey,
+  deriveSecretKey,
+  publicKeyFromPrivate,
+} from "../lib/e2e";
 import { loadChatFromServer, decryptChatHistory } from "../lib/chatHistory";
 import { loadContacts, saveContact } from "../lib/contacts";
 import TxModal from "../components/TxModel";
@@ -15,7 +20,7 @@ const socket = io(import.meta.env.VITE_BACKEND_URL || "http://localhost:4000");
 
 export default function Dashboard() {
   // WALLET STATES
-  const {password} = useApp();
+  const { password } = useApp();
   const [address, setAddress] = useState("");
   const [privateKey, setPrivateKey] = useState("");
 
@@ -27,7 +32,6 @@ export default function Dashboard() {
 
   const [loading, setLoading] = useState(false); // loader
   const [modalData, setModalData] = useState(null); // modal
-
 
   // CHAT STATES
   const [contacts, setContacts] = useState([]); // {name, address}
@@ -48,10 +52,8 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-   
     const cipher = localStorage.getItem("WALLET_DATA");
     const addr = localStorage.getItem("WALLET_ADDRESS");
-
 
     const pk = decrypt(cipher, password);
 
@@ -67,23 +69,23 @@ export default function Dashboard() {
 
   // SEND ETH
   async function send() {
-  try {
+    try {
       setLoading(true);
-      if(!ethers.isAddress(to)) {
-          alert("Invalid recipient address");
-          setLoading (false);
-          return;
+      if (!ethers.isAddress(to)) {
+        alert("Invalid recipient address");
+        setLoading(false);
+        return;
       }
       const amtNum = parseFloat(amt);
-      if(isNaN(amtNum) || amtNum <= 0) {
-          alert("Invalid amount");
-          setLoading (false);
-          return;
+      if (isNaN(amtNum) || amtNum <= 0) {
+        alert("Invalid amount");
+        setLoading(false);
+        return;
       }
-      if(balance < amtNum )  {
+      if (balance < amtNum) {
         alert("Insufficient balance");
-        setLoading (false);
-        return
+        setLoading(false);
+        return;
       }
 
       const tx = await sendEth(privateKey, to, amt);
@@ -95,19 +97,21 @@ export default function Dashboard() {
         from: address,
         to,
         amount: amt,
-        txFee: ethers.formatEther((BigInt(tx.gasUsed) * BigInt(tx.gasPrice)).toString()),
+        txFee: ethers.formatEther(
+          (BigInt(tx.gasUsed) * BigInt(tx.gasPrice)).toString()
+        ),
       });
 
       loadWallet(address);
     } catch (err) {
-        console.log(err)
+      console.log(err);
       setModalData({
         status: "failed",
         hash: "N/A",
         from: address,
         to,
         amount: amt,
-        txFee: "0"
+        txFee: "0",
       });
     }
   }
@@ -125,8 +129,12 @@ export default function Dashboard() {
         alert("This user has not registered for chat!");
         return;
       }
-    
-      const ok = saveContact(newContactAddress, newContactName|| "Unnamed",    publicKey);
+
+      const ok = saveContact(
+        newContactAddress,
+        newContactName || "Unnamed",
+        publicKey
+      );
 
       if (!ok) {
         alert("Contact already exists!");
@@ -134,7 +142,6 @@ export default function Dashboard() {
       }
 
       setContacts(loadContacts());
-
     });
 
     // Reset modal
@@ -143,35 +150,78 @@ export default function Dashboard() {
     setShowModal(false);
   }
 
+  //////////////////////////////////////// CHAT LOGIC ////////////////////////////////////////
 
-//////////////////////////////////////// CHAT LOGIC ////////////////////////////////////////  
+  async function openChat(contact) {
+    setSelected(contact);
+    setChat([]); // clear previous chat
 
-async function openChat(contact) {
-  setSelected(contact);
+    const encrypted = await loadChatFromServer(address, contact.address);
 
-  const encrypted = await loadChatFromServer(address, contact.address);
-  const decrypted = await decryptChatHistory(contact.publicKey, privateKey, address, encrypted);
-  console.log("Decrypted chat history:", decrypted);
-  setChat(decrypted);
-}
+    const decrypted = await decryptChatHistory(
+      contact.publicKey,
+      privateKey,
+      address,
+      encrypted
+    );
+    console.log("openChat :", decrypted, contact, selected);
+    setChat(decrypted);
+  }
 
-  // SOCKET LISTEN
   useEffect(() => {
-    socket.on("message", (m) => {
-      if(selected){
-        if (m.toAddress === address && m.fromAddress === selected.address) {
-          handleIncomingMessage(m);
-        }
-      }
-    });
-  }, [address, {...selected}]);
+    if (!address) return;
 
+    const handler = (m) => {
+      // Only process messages for the active chat
+      console.log("handler called:", m, selected);
+      if (!selected) return;
+
+      const isIncoming =
+        m.toAddress === address && m.fromAddress === selected.address;
+
+      const isOutgoing =
+        m.fromAddress === address && m.toAddress === selected.address;
+
+      if (isIncoming || isOutgoing) {
+        handleIncomingMessage(m);
+      }
+    };
+
+    socket.on("message", handler);
+
+    return () => socket.off("message", handler);
+  }, [address, selected?.address]);
 
   async function handleIncomingMessage(m) {
-    const sender = contacts.find(c => c.address === m.fromAddress);
-    const sharedSecret = await deriveSecretKey(privateKey, "04" + sender.publicKey);
-    const text = decryptWithPrivateKey(sharedSecret.toString("hex"), m.messageText);
-    setChat((prev) => [...prev, { ...m, messageText: text }]);
+    // Prevent duplicates
+    console.log("New message received:", m, selected);
+    setChat((prev) => {
+      if (prev.some((msg) => msg._id === m._id)) {
+        return prev; // message already exists
+      }
+      return prev; // continue and append after decryption
+    });
+
+    const sender = contacts.find((c) => c.address === m.fromAddress);
+
+    if (!sender || !sender.publicKey) return;
+
+    const sharedSecret = await deriveSecretKey(
+      privateKey,
+      "04" + sender.publicKey
+    );
+
+    const text = decryptWithPrivateKey(
+      sharedSecret.toString("hex"),
+      m.messageText
+    );
+
+    // Add unique message after decrypt
+    setChat((prev) => {
+      if (prev.some((msg) => msg._id === m._id)) return prev;
+
+      return [...prev, { ...m, messageText: text }];
+    });
   }
 
   useEffect(() => {
@@ -184,7 +234,10 @@ async function openChat(contact) {
     if (!selected) return alert("Select a contact");
     if (!msg.trim()) return;
 
-    const sharedSecret = await deriveSecretKey(privateKey, "04" +selected.publicKey);
+    const sharedSecret = await deriveSecretKey(
+      privateKey,
+      "04" + selected.publicKey
+    );
     const sharedPublic = publicKeyFromPrivate(sharedSecret.toString("hex"));
 
     const encrypted = await encryptForPublicKey(sharedPublic, msg);
@@ -198,22 +251,27 @@ async function openChat(contact) {
     };
 
     socket.emit("send_message", payload);
-
+    console.log("Sent message payload:", payload, selected);
     setChat((prev) => [...prev, { ...payload, messageText: msg }]);
     setMsg("");
   }
 
   return (
     <div className="flex h-screen bg-gray-100">
-
       {/* LEFT HALF: WALLET */}
       <div className="w-1/2 p-6 overflow-y-auto">
         <h1 className="text-2xl font-semibold mb-4">Wallet Dashboard</h1>
 
         <div className="bg-white p-4 rounded-lg shadow mb-4">
-          <div><b>Address:</b> {address}</div>
-          <div><b>Balance:</b> {balance} ETH</div>
-          <div><b>Network:</b> {network.name} (ChainId {network.chainId})</div>
+          <div>
+            <b>Address:</b> {address}
+          </div>
+          <div>
+            <b>Balance:</b> {balance} ETH
+          </div>
+          <div>
+            <b>Network:</b> {network.name} (ChainId {network.chainId})
+          </div>
         </div>
 
         <div className="bg-white p-4 rounded-lg shadow mb-4">
@@ -237,23 +295,23 @@ async function openChat(contact) {
             onClick={send}
             disabled={loading}
             className={`w-full py-2 rounded text-white ${
-                loading ? "bg-gray-500" : "bg-blue-600"
+              loading ? "bg-gray-500" : "bg-blue-600"
             }`}
-            
           >
-              {loading ? "Sending..." : "Send"}
+            {loading ? "Sending..." : "Send"}
           </button>
         </div>
-
       </div>
-       <TxModal tx={modalData} onClose={() => {
-            setModalData(null);
-            setLoading(false);
-        }} />
+      <TxModal
+        tx={modalData}
+        onClose={() => {
+          setModalData(null);
+          setLoading(false);
+        }}
+      />
 
       {/* RIGHT HALF: CHAT */}
       <div className="w-1/2 flex bg-white shadow">
-
         {/* CONTACT LIST SIDEBAR */}
         <div className="w-1/3 border-r p-4">
           <div className="flex justify-between items-center mb-4">
@@ -270,9 +328,13 @@ async function openChat(contact) {
             {contacts.map((c, i) => (
               <div
                 key={i}
-                onClick={() => { openChat(c) }}
+                onClick={() => {
+                  openChat(c);
+                }}
                 className={`p-2 rounded cursor-pointer ${
-                  selected?.address === c.address ? "bg-blue-100" : "bg-gray-100"
+                  selected?.address === c.address
+                    ? "bg-blue-100"
+                    : "bg-gray-100"
                 }`}
               >
                 <div className="font-semibold">{c.name}</div>
@@ -286,16 +348,13 @@ async function openChat(contact) {
 
         {/* CHAT WINDOW */}
         <div className="flex-1 flex flex-col">
-
           <div className="p-4 border-b">
             {selected ? (
               <h2 className="font-semibold text-lg">
                 Chat with {selected.address.slice(0, 12)}...
               </h2>
             ) : (
-              <h2 className="font-semibold text-gray-500">
-                Select a contact
-              </h2>
+              <h2 className="font-semibold text-gray-500">Select a contact</h2>
             )}
           </div>
 
@@ -336,13 +395,11 @@ async function openChat(contact) {
           )}
         </div>
       </div>
-     
 
       {/* ADD CONTACT POPUP */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
           <div className="bg-white p-5 rounded-lg shadow-lg w-80">
-
             <h2 className="text-xl font-semibold mb-4">Add Contact</h2>
 
             <input
@@ -374,11 +431,9 @@ async function openChat(contact) {
                 Add
               </button>
             </div>
-
           </div>
         </div>
       )}
-
     </div>
   );
 }
